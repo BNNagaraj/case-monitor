@@ -83,6 +83,6 @@ jobs:
           subject: ${{ steps.emailprep.outputs.SUBJECT }}
           to: ${{ secrets.TO_EMAIL }}
           from: ${{ secrets.FROM_EMAIL }}
-          secure: true
+          secure: ${{ secrets.SMTP_PORT == '465' }}
           convert_markdown: false
           body: file://email_body.txt
