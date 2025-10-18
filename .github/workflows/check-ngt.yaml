@@ -1,45 +1,51 @@
-name: NGT Case Monitor
+name: NGT Case Monitor (AI Vision)
 
 on:
   schedule:
     - cron: "30 3 * * *"   # 09:00 IST daily
-  workflow_dispatch:       # allow manual runs
+  workflow_dispatch:
 
 permissions:
-  contents: write          # needed to commit .state/last_hash.txt
+  contents: write
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    env:
+      NGT_URL: "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr libtesseract-dev
           pip install -r requirements.txt
+          playwright install --with-deps
 
-      - name: Run watcher
+      - name: Run AI Vision watcher
         id: runwatch
         env:
-          NGT_URL: "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python ngt_watch.py
-          echo "RESULT_PATH=result.json" >> $GITHUB_OUTPUT
+          python ngt_watch_openai.py
+          cat result.json
           STATUS=$(jq -r '.status' result.json)
-          MSG=$(jq -r '.message' result.json)
-          HTTP=$(jq -r '.["http_status"]' result.json)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "message=$MSG" >> $GITHUB_OUTPUT
-          echo "http_status=$HTTP" >> $GITHUB_OUTPUT
+          MESSAGE=$(jq -r '.message // ""' result.json)
+          CASE_STATUS=$(jq -r '.case_status // ""' result.json)
+          NEXT_HEARING=$(jq -r '.next_hearing_date // ""' result.json)
+          ORDER_SUMMARY=$(jq -r '.order_summary // ""' result.json)
+          REMARKS=$(jq -r '.remarks // ""' result.json)
+          {
+            echo "status=$STATUS"
+            echo "message=$MESSAGE"
+            echo "case_status=$CASE_STATUS"
+            echo "next_hearing_date=$NEXT_HEARING"
+            echo "order_summary=$ORDER_SUMMARY"
+            echo "remarks=$REMARKS"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Commit state if changed
         if: steps.runwatch.outputs.status == 'changed'
@@ -50,29 +56,14 @@ jobs:
           git commit -m "chore(state): update last_hash [skip ci]" || echo "No changes to commit"
           git push
 
-      - name: Prepare email body
-        id: emailprep
-        if: steps.runwatch.outputs.status != 'ok'
-        run: |
-          echo "SUBJECT=" >> $GITHUB_OUTPUT
-          if [ "${{ steps.runwatch.outputs.status }}" = "changed" ]; then
-            echo "SUBJECT=NGT Monitor: CHANGE detected" >> $GITHUB_OUTPUT
-          else
-            echo "SUBJECT=NGT Monitor: ERROR / BLOCKED (HTTP ${{ steps.runwatch.outputs.http_status }})" >> $GITHUB_OUTPUT
-          fi
-          {
-            echo "NGT Case Monitor"
-            echo "URL: https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order"
-            echo
-            echo "Status: ${{ steps.runwatch.outputs.status }}"
-            echo "Message: ${{ steps.runwatch.outputs.message }}"
-            echo "HTTP: ${{ steps.runwatch.outputs.http_status }}"
-            echo
-            echo "Excerpt (first lines):"
-            jq -r '.excerpt' result.json
-          } > email_body.txt
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ngt-screenshot
+          path: page.png
 
-      - name: Send email (SMTP)
+      - name: Send Email (on change or error)
         if: steps.runwatch.outputs.status != 'ok'
         uses: dawidd6/action-send-mail@v3
         with:
@@ -80,9 +71,14 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: ${{ steps.emailprep.outputs.SUBJECT }}
           to: ${{ secrets.TO_EMAIL }}
           from: ${{ secrets.FROM_EMAIL }}
+          subject: "NGT Case Update - ${{ steps.runwatch.outputs.status }}"
+          body: |
+            Case URL: ${{ env.NGT_URL }}
+            Message: ${{ steps.runwatch.outputs.message }}
+            Case Status: ${{ steps.runwatch.outputs.case_status }}
+            Next Hearing: ${{ steps.runwatch.outputs.next_hearing_date }}
+            Summary: ${{ steps.runwatch.outputs.order_summary }}
+            Remarks: ${{ steps.runwatch.outputs.remarks }}
           secure: ${{ secrets.SMTP_PORT == '465' }}
-          convert_markdown: false
-          body: file://email_body.txt
