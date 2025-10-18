@@ -1,10 +1,12 @@
 import base64
-import json
 import hashlib
+import json
 import os
 from pathlib import Path
 
 from openai import OpenAI
+from PIL import Image, ImageDraw, ImageFont
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 STATE_FILE = ".state/last_hash.txt"
@@ -12,11 +14,11 @@ REPORT_FILE = "result.json"
 SCREENSHOT = "page.png"
 
 URL = os.getenv(
-    "NGT_URL",
-    "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order",
+        "NGT_URL",
+        "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order",
 )
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 PROMPT = """
 From this NGT case webpage screenshot, extract and summarize:
@@ -27,10 +29,10 @@ From this NGT case webpage screenshot, extract and summarize:
 
 Return JSON in the format:
 {
-  "case_status": "...",
-  "next_hearing_date": "...",
-  "order_summary": "...",
-  "remarks": "..."
+    "case_status": "...",
+    "next_hearing_date": "...",
+    "order_summary": "...",
+    "remarks": "..."
 }
 """
 
@@ -52,13 +54,31 @@ def take_screenshot() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page()
-        page.goto(URL, wait_until="load", timeout=60000)
-        page.screenshot(path=SCREENSHOT, full_page=True)
-        browser.close()
+        try:
+            page.goto(URL, wait_until="load", timeout=60000)
+            page.screenshot(path=SCREENSHOT, full_page=True)
+        except PlaywrightTimeoutError as exc:
+            page.screenshot(path=SCREENSHOT, full_page=True)
+            raise RuntimeError(f"Timed out loading page: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            if page.content():
+                page.screenshot(path=SCREENSHOT, full_page=True)
+            raise
+        finally:
+            browser.close()
+
+
+def create_placeholder_screenshot(message: str) -> None:
+    img = Image.new("RGB", (1600, 900), color="white")
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default()
+    text = "NGT Case Monitor\n" + message
+    draw.multiline_text((40, 40), text, fill="black", font=font, spacing=4)
+    img.save(SCREENSHOT, format="PNG")
 
 
 def analyze_with_openai() -> dict:
-    if not OPENAI_API_KEY:
+    if not client:
         raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
 
     with open(SCREENSHOT, "rb") as screenshot_file:
@@ -108,7 +128,9 @@ def main() -> None:
         else:
             result["message"] = "No change detected."
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        if not Path(SCREENSHOT).exists():
+            create_placeholder_screenshot(f"Error: {exc}")
         result = {
             "status": "error",
             "message": str(exc),
