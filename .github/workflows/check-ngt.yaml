@@ -1,0 +1,88 @@
+name: NGT Case Monitor
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # 09:00 IST daily
+  workflow_dispatch:       # allow manual runs
+
+permissions:
+  contents: write          # needed to commit .state/last_hash.txt
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run watcher
+        id: runwatch
+        env:
+          NGT_URL: "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order"
+        run: |
+          python ngt_watch.py
+          echo "RESULT_PATH=result.json" >> $GITHUB_OUTPUT
+          STATUS=$(jq -r '.status' result.json)
+          MSG=$(jq -r '.message' result.json)
+          HTTP=$(jq -r '.["http_status"]' result.json)
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "message=$MSG" >> $GITHUB_OUTPUT
+          echo "http_status=$HTTP" >> $GITHUB_OUTPUT
+
+      - name: Commit state if changed
+        if: steps.runwatch.outputs.status == 'changed'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .state/last_hash.txt
+          git commit -m "chore(state): update last_hash [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Prepare email body
+        id: emailprep
+        if: steps.runwatch.outputs.status != 'ok'
+        run: |
+          echo "SUBJECT=" >> $GITHUB_OUTPUT
+          if [ "${{ steps.runwatch.outputs.status }}" = "changed" ]; then
+            echo "SUBJECT=NGT Monitor: CHANGE detected" >> $GITHUB_OUTPUT
+          else
+            echo "SUBJECT=NGT Monitor: ERROR / BLOCKED (HTTP ${{ steps.runwatch.outputs.http_status }})" >> $GITHUB_OUTPUT
+          fi
+          {
+            echo "NGT Case Monitor"
+            echo "URL: https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order"
+            echo
+            echo "Status: ${{ steps.runwatch.outputs.status }}"
+            echo "Message: ${{ steps.runwatch.outputs.message }}"
+            echo "HTTP: ${{ steps.runwatch.outputs.http_status }}"
+            echo
+            echo "Excerpt (first lines):"
+            jq -r '.excerpt' result.json
+          } > email_body.txt
+
+      - name: Send email (SMTP)
+        if: steps.runwatch.outputs.status != 'ok'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: ${{ steps.emailprep.outputs.SUBJECT }}
+          to: ${{ secrets.TO_EMAIL }}
+          from: ${{ secrets.FROM_EMAIL }}
+          secure: true
+          convert_markdown: false
+          body: file://email_body.txt
