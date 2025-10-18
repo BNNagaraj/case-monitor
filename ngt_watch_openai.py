@@ -51,8 +51,19 @@ def write_last_hash(h: str) -> None:
 
 
 def take_screenshot() -> None:
+    proxy_server = (
+        os.getenv("PLAYWRIGHT_PROXY")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+        or ""
+    )
+
+    launch_kwargs: dict = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+    if proxy_server:
+        launch_kwargs["proxy"] = {"server": proxy_server}
+
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = playwright.chromium.launch(**launch_kwargs)
         page = browser.new_page()
         try:
             page.goto(URL, wait_until="load", timeout=60000)
