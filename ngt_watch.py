@@ -3,7 +3,7 @@ from typing import Tuple
 import requests
 from bs4 import BeautifulSoup
 
-URL = os.getenv("NGT_URL", "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138000312025?page=order")
+URL = os.getenv("NGT_URL", "https://www.greentribunal.gov.in/caseDetails/PUNE/2704138009242024?page=order")
 STATE_FILE = ".state/last_hash.txt"
 REPORT_FILE = "result.json"
 
